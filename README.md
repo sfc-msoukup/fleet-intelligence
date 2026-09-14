@@ -2,9 +2,17 @@
 
 Live operational dashboard for every Cortex Agent in a Snowflake account: request volume, cost, token composition, request- and tool-level error rates, per-model and Cortex Search rate-limit saturation, a per-agent hex fleet, and explicit thumbs-up/down feedback. It reads Snowflake's native AI Observability (`SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS`) plus cost metering, materializes them into `FLEET_*` tables via a serverless task, and serves them as a Next.js app on Snowflake App Runtime (SAR).
 
-![Fleet Intelligence home dashboard — fleet-wide KPIs, the binding rate-limit constraint, request volume and errors, per-model and Cortex Search saturation gauges, and the per-agent fleet](docs/screenshot-home.jpg)
+![Fleet Intelligence home dashboard — fleet-wide KPIs, the binding rate-limit constraint, a request-volume & error chart, and per-model / Cortex Search saturation gauges](docs/screenshot-home.png)
 
-*The home dashboard: fleet-wide KPIs (requests, active agents, cost, error rate), the binding rate-limit constraint, a request-volume & error chart, per-model and Cortex Search saturation gauges, and the per-agent hex fleet — all scoped by the time-window selector.*
+*Home overview: fleet-wide KPIs (requests, active agents, cost, error rate), the binding rate-limit constraint, a request-volume & error chart, and per-model / Cortex Search saturation gauges — all scoped by the time-window selector (shown here at the 1-year window).*
+
+![Agent Fleet — error taxonomy, top users and roles by volume, and the per-agent hex fleet colored by health](docs/screenshot-fleet.png)
+
+*Lower home: error taxonomy, top users and roles by request volume, and the per-agent hex fleet colored by health (nominal / idle / critical / off).*
+
+![Feedback route — thumbs-up/down totals, negative-feedback categories, feedback by agent, and the raw feedback stream](docs/screenshot-feedback.png)
+
+*Feedback route: explicit thumbs-up/down totals, negative-feedback category breakdown, the positive/negative split per agent, and the raw feedback stream with user comments.*
 
 **Stand it up from scratch in any account:** run [`setup.sql`](setup.sql), then `snow app deploy` — see [Deploy from scratch](#deploy-from-scratch) below.
 
