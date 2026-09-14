@@ -1,0 +1,230 @@
+@import "tailwindcss";
+
+/* =============================================================================
+   FLEET CONSOLE - dark ops theme
+   -----------------------------------------------------------------------------
+   Design rules this file enforces:
+   1. Hue is reserved for STATUS. Data series use a separate achromatic-leaning
+      ramp. Interactive affordances (focus, hover, selection) are achromatic.
+      A screen where the only saturated pixels are the agents in trouble is
+      legible at a glance and cannot be mistaken for a generic template.
+   2. No violet / indigo / purple anywhere.
+   3. Sharp radii (2-3px). Never rounded-2xl.
+   4. 1px hairlines in three weights carry structure. No drop shadows for
+      elevation - a tonal step plus a hairline does that job on dark surfaces.
+   5. Every numeral is tabular so refreshing values never reflow.
+   ========================================================================== */
+
+/* next/font/local handles are CSS variables, so this block must be `inline`
+   or the reference resolves at the wrong point in the cascade. */
+@theme inline {
+  --font-display: var(--font-chakra);
+  --font-mono: var(--font-jetbrains);
+  --font-sans: var(--font-plex);
+}
+
+@theme {
+  /* ---- surfaces: cool blue-black. never pure #000, never neutral zinc ---- */
+  --color-void: #05070a;
+  --color-base: #0a0e14;
+  --color-panel: #0e141c;
+  --color-raised: #131b25;
+  --color-inset: #070b10;
+
+  /* ---- hairlines: three weights, all low contrast ---- */
+  --color-line-faint: #161e28;
+  --color-line: #1f2a36;
+  --color-line-strong: #2c3a48;
+
+  /* ---- ink ---- */
+  --color-ink-hi: #e6edf5;
+  --color-ink: #a9b6c4;
+  --color-ink-lo: #6b7a8b;
+  --color-ink-faint: #48545f;
+
+  /* ---- STATUS. Nothing decorative may use these. ----
+     nominal is a cyan-leaning mint, not a true green: under deuteranopia and
+     protanopia true green collapses toward the amber/red band, whereas pushing
+     it toward cyan preserves separation. Luminance steps are ~30 points apart
+     so all four states remain distinguishable in greyscale. Each state also
+     carries a glyph and a word in the UI, so hue is never the only channel. */
+  --color-st-nominal: #2fd8a6;
+  /* IDLE = "quiet, not broken", so it gets a cold icy blue rather than the amber
+     warning hue. Pale and low-energy on purpose: it recedes instead of competing
+     with NOMINAL and CRITICAL. B sits above G here, which keeps it reading as
+     blue and separates it from the cyan data series ds-1 (#7ad7f0, where G>B).
+     st-degraded is kept below for the status strip and saturation panel, where
+     amber genuinely means "warning". */
+  --color-st-idle: #93c5fd;
+  --color-st-degraded: #ffc53d;
+  --color-st-critical: #ff5a5f;
+  --color-st-off: #5a6675;
+  --color-st-info: #4da8ff;
+
+  /* ---- data series: deliberately NOT the status colours ---- */
+  --color-ds-1: #7ad7f0;
+  --color-ds-2: #4fb8c9;
+  --color-ds-3: #c8b88a;
+  --color-ds-4: #d98c6a;
+  --color-ds-5: #8e9bb0;
+  --color-ds-6: #5f7d95;
+
+  /* ---- glow: 1px core ring + tight halo + wide atmosphere ---- */
+  --shadow-glow-nominal:
+    0 0 0 1px color-mix(in oklab, var(--color-st-nominal) 40%, transparent),
+    0 0 12px -2px color-mix(in oklab, var(--color-st-nominal) 45%, transparent),
+    0 0 34px -8px color-mix(in oklab, var(--color-st-nominal) 30%, transparent);
+  --shadow-glow-degraded:
+    0 0 0 1px color-mix(in oklab, var(--color-st-degraded) 40%, transparent),
+    0 0 12px -2px color-mix(in oklab, var(--color-st-degraded) 45%, transparent),
+    0 0 34px -8px color-mix(in oklab, var(--color-st-degraded) 30%, transparent);
+  --shadow-glow-critical:
+    0 0 0 1px color-mix(in oklab, var(--color-st-critical) 55%, transparent),
+    0 0 14px -2px color-mix(in oklab, var(--color-st-critical) 60%, transparent),
+    0 0 40px -8px color-mix(in oklab, var(--color-st-critical) 38%, transparent);
+
+  /* inner top-edge highlight - makes a panel read as milled, not drawn */
+  --inset-shadow-bevel: inset 0 1px 0 0 rgb(255 255 255 / 0.045);
+
+  /* ---- radii: sharp ---- */
+  --radius-panel: 3px;
+  --radius-chip: 2px;
+
+  --ease-instrument: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ---- animation. @keyframes must be nested inside @theme to be emitted
+     when paired with an --animate-* token. ---- */
+  --animate-breathe: breathe 2.6s var(--ease-instrument) infinite;
+  --animate-sweep: sweep 1.1s var(--ease-instrument) 1;
+  --animate-scanbar: scanbar 1.4s linear infinite;
+  --animate-fadeup: fadeup 0.32s var(--ease-instrument) both;
+
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: var(--breathe-from, 0.25);
+    }
+    50% {
+      opacity: var(--breathe-to, 0.6);
+    }
+  }
+  @keyframes sweep {
+    from {
+      transform: translateX(-100%);
+      opacity: 0;
+    }
+    35% {
+      opacity: 1;
+    }
+    to {
+      transform: translateX(100%);
+      opacity: 0;
+    }
+  }
+  @keyframes scanbar {
+    0% {
+      transform: translateX(-40%) scaleX(0.25);
+    }
+    100% {
+      transform: translateX(240%) scaleX(0.25);
+    }
+  }
+  @keyframes fadeup {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Dark-only console. Shipping one theme sidesteps the @theme inline
+   dark-mode interaction entirely and is the right call for an ops surface. */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-void);
+  color: var(--color-ink);
+}
+
+/* The one background effect worth having: a static graticule. It reads as an
+   instrument panel immediately and, crucially, does not move. */
+body {
+  background-image:
+    linear-gradient(to right, var(--color-line-faint) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-line-faint) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-attachment: fixed;
+}
+
+/* Every numeral in the app, once. Proportional numerals visibly jitter when a
+   value refreshes, which repeatedly pulls the eye back to it. */
+.tnum,
+table,
+[data-metric],
+.font-mono {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ---- primitives ---- */
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--inset-shadow-bevel);
+}
+
+/* 11px uppercase tracked label. This single treatment does more for the
+   instrument feel than any effect. */
+.label-micro {
+  font-family: var(--font-display);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-ink-lo);
+}
+
+.hairline {
+  border-color: var(--color-line);
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-st-info) 30%, transparent);
+  color: var(--color-ink-hi);
+}
+
+/* Scrollbars that match the chrome instead of fighting it */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 0;
+  border: 3px solid var(--color-void);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

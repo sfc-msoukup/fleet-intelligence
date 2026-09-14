@@ -1,0 +1,18 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Fleet Intelligence "FI" bug. A miniature of the in-app rail mark
+       (components/console/console-shell.tsx): near-black inset tile, hairline
+       border, near-white monogram. The letters are vector rects, not text, so
+       the favicon renders identically without loading the Chakra Petch webfont. -->
+  <rect width="24" height="24" rx="4" fill="#070b10" />
+  <rect x="0.75" y="0.75" width="22.5" height="22.5" rx="3.25" stroke="#2c3a48" stroke-width="1.5" />
+  <g fill="#e6edf5">
+    <!-- F -->
+    <rect x="5.5" y="6.5" width="2.3" height="11" />
+    <rect x="5.5" y="6.5" width="6" height="2.3" />
+    <rect x="5.5" y="10.85" width="4.6" height="2.2" />
+    <!-- I (slab serif) -->
+    <rect x="13.3" y="6.5" width="5.4" height="2.3" />
+    <rect x="14.85" y="6.5" width="2.3" height="11" />
+    <rect x="13.3" y="15.2" width="5.4" height="2.3" />
+  </g>
+</svg>

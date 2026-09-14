@@ -1,0 +1,46 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug / logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.log
+
+# env files
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# local Snowflake / Cortex Code tooling state (plans, scratch)
+.snowflake/
+
+# Resolved SAR deploy manifest — account-specific (database/schema/warehouse).
+# The generic build-phase template `app.yml.template-build` IS committed; run
+# `snow app setup` to generate app.yml / snowflake.yml for your own account.
+/app.yml
+/snowflake.yml
