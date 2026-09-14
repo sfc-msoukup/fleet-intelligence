@@ -44,3 +44,6 @@ next-env.d.ts
 # `snow app setup` to generate app.yml / snowflake.yml for your own account.
 /app.yml
 /snowflake.yml
+
+# snow app deploy scratch bundle
+/output

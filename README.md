@@ -2,6 +2,10 @@
 
 Live operational dashboard for every Cortex Agent in a Snowflake account: request volume, cost, token composition, request- and tool-level error rates, per-model and Cortex Search rate-limit saturation, a per-agent hex fleet, and explicit thumbs-up/down feedback. It reads Snowflake's native AI Observability (`SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS`) plus cost metering, materializes them into `FLEET_*` tables via a serverless task, and serves them as a Next.js app on Snowflake App Runtime (SAR).
 
+![Fleet Intelligence home dashboard — fleet-wide KPIs, the binding rate-limit constraint, request volume and errors, per-model and Cortex Search saturation gauges, and the per-agent fleet](docs/screenshot-home.jpg)
+
+*The home dashboard: fleet-wide KPIs (requests, active agents, cost, error rate), the binding rate-limit constraint, a request-volume & error chart, per-model and Cortex Search saturation gauges, and the per-agent hex fleet — all scoped by the time-window selector.*
+
 **Stand it up from scratch in any account:** run [`setup.sql`](setup.sql), then `snow app deploy` — see [Deploy from scratch](#deploy-from-scratch) below.
 
 Built on the Snowflake Next.js app template; the sections below document that foundation and how the code is organized.
