@@ -2,7 +2,6 @@ import { fleetQuery, parseConfig, num, numOrNull, str } from "@/lib/fleet-data";
 import {
   Q_CONFIG,
   Q_AGENT_LIST,
-  Q_TRACE_SPANS,
   qAgentTrend,
   qAgentTokens,
   qAgentResources,
@@ -11,6 +10,7 @@ import {
   qAgentUsersRoles,
   qAgentFeedbackTrend,
   qAgentKpis,
+  qAgentVersions,
   isWindowKey,
   type WindowKey,
 } from "@/lib/fleet-sql";
@@ -24,7 +24,13 @@ export async function GET(req: Request) {
     const wParam = url.searchParams.get("window");
     const window: WindowKey = isWindowKey(wParam) ? wParam : "24h";
     const agent = url.searchParams.get("agent");
-    const traceId = url.searchParams.get("trace");
+    // Optional version subset. Empty = ALL. Comma-separated in the URL, always
+    // bound (never interpolated) into the per-agent queries below.
+    const versions = (url.searchParams.get("versions") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const vc = versions.length;
 
     const cfg = parseConfig(await fleetQuery(Q_CONFIG));
     const ex = cfg.excludeEvalRuns;
@@ -57,23 +63,26 @@ export async function GET(req: Request) {
           turnsTotal: num(inv.TURNS_TOTAL),
           distinctUsers: num(inv.DISTINCT_USERS),
           lastTurnTs: str(inv.LAST_TURN_TS),
+          // Live version of the most recent turn ("LIVE", "VERSION$2", ...), or
+          // null for agents whose turns predate the version attribute.
+          currentVersion: str(inv.CURRENT_VERSION),
+          distinctVersions: num(inv.DISTINCT_VERSIONS),
         }
       : null;
 
-    const [trend, tokens, resources, cohorts, slow, usersRoles, feedback, kpiRows] =
+    const [trend, tokens, resources, cohorts, slow, usersRoles, feedback, kpiRows, versionRows] =
       await Promise.all([
-        fleetQuery(qAgentTrend(window, ex), [agent]),
-        fleetQuery(qAgentTokens(window, ex), [agent]),
-        fleetQuery(qAgentResources(window, ex), [agent]),
-        fleetQuery(qLatencyCohorts(window, ex), [agent]),
-        fleetQuery(qSlowTraces(window, ex), [agent]),
-        fleetQuery(qAgentUsersRoles(window, ex), [agent]),
+        fleetQuery(qAgentTrend(window, ex, vc), [agent, ...versions]),
+        fleetQuery(qAgentTokens(window, ex, vc), vc > 0 ? [agent, agent, ...versions] : [agent]),
+        fleetQuery(qAgentResources(window, ex, vc), vc > 0 ? [agent, agent, ...versions] : [agent]),
+        fleetQuery(qLatencyCohorts(window, ex, vc), [agent, ...versions]),
+        fleetQuery(qSlowTraces(window, ex, vc), [agent, ...versions]),
+        fleetQuery(qAgentUsersRoles(window, ex, vc), [agent, ...versions]),
         fleetQuery(qAgentFeedbackTrend(window), [agent]),
-        fleetQuery(qAgentKpis(window, ex), [agent]),
+        fleetQuery(qAgentKpis(window, ex, vc), [agent, ...versions]),
+        // Not version-filtered: this drives the version chip list itself.
+        fleetQuery(qAgentVersions(window, ex), [agent]),
       ]);
-
-    // Only fetch a span tree when a trace is explicitly selected.
-    const spans = traceId ? await fleetQuery(Q_TRACE_SPANS, [traceId]) : [];
 
     const kr = kpiRows[0] ?? {};
     const requests = num(kr.REQUESTS);
@@ -178,6 +187,9 @@ export async function GET(req: Request) {
         isRequestError: Boolean(r.IS_REQUEST_ERROR),
         toolErrorCount: num(r.TOOL_ERROR_COUNT),
         totalTokens: num(r.TOTAL_TOKENS),
+        // First ~200 chars of the user's prompt, shown in the trace ribbon.
+        questionText: str(r.QUESTION_TEXT),
+        agentVersion: str(r.AGENT_VERSION),
       })),
       usersRoles: usersRoles.map((r) => ({
         userName: str(r.USER_NAME),
@@ -191,26 +203,13 @@ export async function GET(req: Request) {
         positive: num(r.POSITIVE),
         negative: num(r.NEGATIVE),
       })),
-      traceId,
-      spans: spans.map((r) => ({
-        spanId: str(r.SPAN_ID),
-        parentSpanId: str(r.PARENT_SPAN_ID),
-        spanName: str(r.SPAN_NAME),
-        spanCategory: str(r.SPAN_CATEGORY),
-        startTs: str(r.START_TS),
-        endTs: str(r.END_TS),
-        latencyMs: numOrNull(r.LATENCY_MS),
-        // Some spans emit start after end; the data layer nulls those. Surfaced
-        // as a flag so the waterfall can exclude them visibly rather than
-        // drawing a misleading zero-width bar.
-        hasInvalidDuration: Boolean(r.HAS_INVALID_DURATION),
-        stepNumber: r.STEP_NUMBER === null ? null : num(r.STEP_NUMBER),
-        modelName: str(r.MODEL_NAME),
-        toolStatus: str(r.TOOL_STATUS),
-        toolStatusDescription: str(r.TOOL_STATUS_DESCRIPTION),
-        planningStatus: str(r.PLANNING_STATUS),
-        isToolError: Boolean(r.IS_TOOL_ERROR),
+      // Distinct versions available for this agent in the window (unfiltered by
+      // the current selection) plus the selection echoed back for the UI.
+      versionsAvailable: versionRows.map((r) => ({
+        version: str(r.VERSION),
+        turns: num(r.TURNS),
       })),
+      selectedVersions: versions,
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";

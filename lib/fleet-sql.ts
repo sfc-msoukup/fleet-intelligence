@@ -241,11 +241,27 @@ SELECT
  * are DISPLAY ONLY - the app never executes them, the real queries use binds - so
  * a literal predicate is correct here and keeps the snippet copy-pasteable.
  */
-export function explainRequests(w: string, excludeEval: boolean, agentFqn?: string | null): string {
+/**
+ * Display-only version predicate for the SQL popovers. Values are inlined (and
+ * single-quote-escaped) rather than bound because these strings are shown, not
+ * executed - the same treatment the popovers already give agent_fqn.
+ */
+function versionInDisplay(versions: string[], col = "agent_version"): string {
+  if (!versions.length) return "";
+  const list = versions.map((v) => `'${v.replace(/'/g, "''")}'`).join(", ");
+  return `\n  AND ${col} IN (${list})`;
+}
+
+export function explainRequests(
+  w: string,
+  excludeEval: boolean,
+  agentFqn?: string | null,
+  versions: string[] = [],
+): string {
   const k: WindowKey = isWindowKey(w) ? w : "24h";
   return `SELECT COUNT(*) AS REQUESTS
 FROM ${FLEET_SCHEMA}.FLEET_TURNS
-WHERE turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT is_eval_run" : ""};`;
+WHERE turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT is_eval_run" : ""}${versionInDisplay(versions)};`;
 }
 
 /**
@@ -291,6 +307,7 @@ export function explainCost(
   excludeEval: boolean,
   usdRate: number,
   agentFqn?: string | null,
+  versions: string[] = [],
 ): string {
   const k: WindowKey = isWindowKey(w) ? w : "24h";
   const rate = Number.isFinite(usdRate) && usdRate > 0 ? usdRate : 2.0;
@@ -306,7 +323,7 @@ FROM (
   GROUP BY request_id
 ) c
 JOIN ${FLEET_SCHEMA}.FLEET_TURNS t ON t.request_id = c.request_id
-WHERE t.turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND t.agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT t.is_eval_run" : ""};`;
+WHERE t.turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND t.agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT t.is_eval_run" : ""}${versionInDisplay(versions, "t.agent_version")};`;
 }
 
 /**
@@ -326,6 +343,7 @@ export function explainTurnsPerThread(
   w: string,
   excludeEval: boolean,
   agentFqn?: string | null,
+  versions: string[] = [],
 ): string {
   const k: WindowKey = isWindowKey(w) ? w : "24h";
   return `SELECT
@@ -335,7 +353,7 @@ export function explainTurnsPerThread(
   ROUND(COUNT_IF(thread_id IS NOT NULL)
         / NULLIF(COUNT(DISTINCT thread_id), 0), 2) AS TURNS_PER_THREAD
 FROM ${FLEET_SCHEMA}.FLEET_TURNS
-WHERE turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT is_eval_run" : ""};`;
+WHERE turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT is_eval_run" : ""}${versionInDisplay(versions)};`;
 }
 
 /**
@@ -352,7 +370,12 @@ WHERE turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND agent_fqn = '${agentFqn}'`
  * `is_degraded_success` is included because the tile's detail line reports it: a
  * turn that returned HTTP-success with an empty or "Unable to respond" payload.
  */
-export function explainErrorRates(w: string, excludeEval: boolean, agentFqn?: string | null): string {
+export function explainErrorRates(
+  w: string,
+  excludeEval: boolean,
+  agentFqn?: string | null,
+  versions: string[] = [],
+): string {
   const k: WindowKey = isWindowKey(w) ? w : "24h";
   return `SELECT
   COUNT(*)                            AS REQUESTS,
@@ -364,7 +387,7 @@ export function explainErrorRates(w: string, excludeEval: boolean, agentFqn?: st
   ROUND(100 * COUNT_IF(has_tool_error)
             / NULLIF(COUNT(*), 0), 1) AS TOOL_ERROR_PCT
 FROM ${FLEET_SCHEMA}.FLEET_TURNS
-WHERE turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT is_eval_run" : ""};`;
+WHERE turn_end_ts >= ${since(k)}${agentFqn ? `\n  AND agent_fqn = '${agentFqn}'` : ""}${excludeEval ? "\n  AND NOT is_eval_run" : ""}${versionInDisplay(versions)};`;
 }
 
 /**
@@ -914,7 +937,16 @@ ORDER BY 1`;
    PAGE 3 - agent deep dive
    ------------------------------------------------------------------------ */
 
-export function qAgentTrend(w: WindowKey, excludeEval: boolean): string {
+/**
+ * Placeholder clause for the optional version filter. Empty when no version is
+ * selected (ALL); otherwise `AND <col> IN (?, ?, ...)` with `n` binds. Version
+ * values are always BOUND, never interpolated - they arrive from the client.
+ */
+function versionInClause(n: number, col = "agent_version"): string {
+  return n > 0 ? `AND ${col} IN (${Array(n).fill("?").join(", ")})` : "";
+}
+
+export function qAgentTrend(w: WindowKey, excludeEval: boolean, versionCount = 0): string {
   const b = bucket(w);
   return `
 SELECT
@@ -927,6 +959,7 @@ SELECT
 FROM ${FLEET_SCHEMA}.FLEET_TURNS
 WHERE agent_fqn = ? AND turn_end_ts >= ${since(w)}
   ${excludeEval ? "AND NOT is_eval_run" : ""}
+  ${versionInClause(versionCount)}
 GROUP BY 1 ORDER BY 1`;
 }
 
@@ -943,8 +976,20 @@ GROUP BY 1 ORDER BY 1`;
  * stackable set (cache_read + cache_write + fresh_input + output) reconciles
  * exactly to total, and plan is returned for separate, non-stacked display.
  */
-export function qAgentTokens(w: WindowKey, excludeEval: boolean): string {
+export function qAgentTokens(w: WindowKey, excludeEval: boolean, versionCount = 0): string {
   const b = bucket(w);
+  // FLEET_TOKENS carries no agent_version, so a selected version is applied by
+  // restricting to the trace ids of that version's turns. Binds for this query
+  // are therefore [agent (tokens), agent (subquery), ...versions].
+  const versionFilter =
+    versionCount > 0
+      ? `AND trace_id IN (
+    SELECT trace_id FROM ${FLEET_SCHEMA}.FLEET_TURNS
+    WHERE agent_fqn = ? AND turn_end_ts >= ${since(w)}
+      ${excludeEval ? "AND NOT is_eval_run" : ""}
+      ${versionInClause(versionCount)}
+  )`
+      : "";
   return `
 SELECT
   DATE_TRUNC('${b}', ts)             AS TS,
@@ -959,16 +1004,29 @@ SELECT
 FROM ${FLEET_SCHEMA}.FLEET_TOKENS
 WHERE agent_fqn = ? AND ts >= ${since(w)}
   ${excludeEval ? "AND NOT is_eval_run" : ""}
+  ${versionFilter}
 GROUP BY 1 ORDER BY 1`;
 }
 
 /** Resource usage frequency: semantic views, search services, skills, tools. */
-export function qAgentResources(w: WindowKey, excludeEval: boolean): string {
+export function qAgentResources(w: WindowKey, excludeEval: boolean, versionCount = 0): string {
+  // FLEET_SPANS carries no agent_version; scope to the version's trace ids.
+  // Binds: [agent (spans), agent (subquery), ...versions].
+  const versionFilter =
+    versionCount > 0
+      ? `AND trace_id IN (
+    SELECT trace_id FROM ${FLEET_SCHEMA}.FLEET_TURNS
+    WHERE agent_fqn = ? AND turn_end_ts >= ${since(w)}
+      ${excludeEval ? "AND NOT is_eval_run" : ""}
+      ${versionInClause(versionCount)}
+  )`
+      : "";
   return `
 WITH s AS (
   SELECT * FROM ${FLEET_SCHEMA}.FLEET_SPANS
   WHERE agent_fqn = ? AND end_ts >= ${since(w)}
     ${excludeEval ? "AND NOT is_eval_run" : ""}
+    ${versionFilter}
 )
 SELECT 'Semantic View' AS KIND, semantic_view AS NAME, COUNT(*) AS N,
        ROUND(APPROX_PERCENTILE(latency_ms, 0.95)) AS P95_MS,
@@ -1003,7 +1061,7 @@ ORDER BY N DESC`;
  * the p95 cohort is selected by TOTAL turn duration, and mean self-time per
  * span category within that cohort is compared against the p50 cohort.
  */
-export function qLatencyCohorts(w: WindowKey, excludeEval: boolean): string {
+export function qLatencyCohorts(w: WindowKey, excludeEval: boolean, versionCount = 0): string {
   return `
 WITH turns AS (
   SELECT trace_id, duration_ms
@@ -1011,6 +1069,7 @@ WITH turns AS (
   WHERE agent_fqn = ? AND turn_end_ts >= ${since(w)}
     AND NOT is_request_error
     ${excludeEval ? "AND NOT is_eval_run" : ""}
+    ${versionInClause(versionCount)}
 ),
 thresholds AS (
   SELECT APPROX_PERCENTILE(duration_ms, 0.95) AS p95,
@@ -1056,21 +1115,36 @@ ORDER BY 1, MEAN_MS_PER_TRACE DESC`;
  * fast-fail turns that error before a request id is assigned consume zero tokens.
  * An inner join would silently hide exactly the failures worth inspecting.
  */
-export function qSlowTraces(w: WindowKey, excludeEval: boolean): string {
+export function qSlowTraces(w: WindowKey, excludeEval: boolean, versionCount = 0): string {
   return `
 WITH tok AS (
   SELECT trace_id, SUM(total_tokens) AS total_tokens
   FROM ${FLEET_SCHEMA}.FLEET_TOKENS
   GROUP BY trace_id
+),
+-- The user's prompt, read live from the root span. Kept out of FLEET_TURNS on
+-- purpose so it surfaces without a data-layer rebuild. Exactly one root span per
+-- trace (verified: COUNT(*) OVER (PARTITION BY trace_id) = 1 for every trace),
+-- so this LEFT JOIN cannot fan out the 25-row result.
+q AS (
+  SELECT TRACE['trace_id']::STRING AS trace_id,
+         LEFT(RECORD_ATTRIBUTES['ai.observability.record_root.input']::STRING, 200) AS question_text
+  FROM SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS
+  WHERE RECORD['name']::STRING = 'AgentV2RequestResponseInfo'
+    AND UPPER(RECORD_ATTRIBUTES['snow.ai.observability.object.type']::STRING) = 'CORTEX AGENT'
 )
 SELECT t.trace_id AS TRACE_ID, t.turn_end_ts AS TURN_END_TS, t.duration_ms AS DURATION_MS,
        t.user_name AS USER_NAME, t.planning_steps AS PLANNING_STEPS,
        t.is_request_error AS IS_REQUEST_ERROR, t.tool_error_count AS TOOL_ERROR_COUNT,
-       COALESCE(k.total_tokens, 0) AS TOTAL_TOKENS
+       t.agent_version AS AGENT_VERSION,
+       COALESCE(k.total_tokens, 0) AS TOTAL_TOKENS,
+       q.question_text AS QUESTION_TEXT
 FROM ${FLEET_SCHEMA}.FLEET_TURNS t
 LEFT JOIN tok k ON k.trace_id = t.trace_id
+LEFT JOIN q      ON q.trace_id = t.trace_id
 WHERE t.agent_fqn = ? AND t.turn_end_ts >= ${since(w)}
   ${excludeEval ? "AND NOT t.is_eval_run" : ""}
+  ${versionInClause(versionCount, "t.agent_version")}
 ORDER BY t.duration_ms DESC NULLS LAST LIMIT 25`;
 }
 
@@ -1086,12 +1160,13 @@ ORDER BY t.duration_ms DESC NULLS LAST LIMIT 25`;
  * TURNS_IN_THREADS is therefore the numerator, and THREADLESS_TURNS is returned
  * so the UI can disclose what was excluded rather than absorbing it silently.
  */
-export function qAgentKpis(w: WindowKey, excludeEval: boolean): string {
+export function qAgentKpis(w: WindowKey, excludeEval: boolean, versionCount = 0): string {
   return `
 WITH t AS (
   SELECT * FROM ${FLEET_SCHEMA}.FLEET_TURNS
   WHERE agent_fqn = ? AND turn_end_ts >= ${since(w)}
     ${excludeEval ? "AND NOT is_eval_run" : ""}
+    ${versionInClause(versionCount)}
 ),
 -- Pre-aggregated to request grain BEFORE joining t. FLEET_REQUEST_COST is at
 -- (request_id, service_type, model) grain, so a direct join multiplies each turn
@@ -1159,7 +1234,7 @@ FROM ${FLEET_SCHEMA}.FLEET_SPANS
 WHERE trace_id = ?
 ORDER BY start_ts, latency_ms DESC`;
 
-export function qAgentUsersRoles(w: WindowKey, excludeEval: boolean): string {
+export function qAgentUsersRoles(w: WindowKey, excludeEval: boolean, versionCount = 0): string {
   return `
 SELECT
   COALESCE(user_name, '(unattributed)') AS USER_NAME,
@@ -1170,7 +1245,24 @@ SELECT
 FROM ${FLEET_SCHEMA}.FLEET_TURNS
 WHERE agent_fqn = ? AND turn_end_ts >= ${since(w)}
   ${excludeEval ? "AND NOT is_eval_run" : ""}
+  ${versionInClause(versionCount)}
 GROUP BY 1, 2 ORDER BY REQUESTS DESC LIMIT 20`;
+}
+
+/**
+ * Distinct agent versions for one agent within the window, for the version
+ * chip row. Deliberately NOT filtered by the selected version - it must list
+ * every version so a user can switch between them. Empty-string versions
+ * (turns predating the observability attribute) are excluded.
+ */
+export function qAgentVersions(w: WindowKey, excludeEval: boolean): string {
+  return `
+SELECT agent_version AS VERSION, COUNT(*) AS TURNS
+FROM ${FLEET_SCHEMA}.FLEET_TURNS
+WHERE agent_fqn = ? AND turn_end_ts >= ${since(w)}
+  AND agent_version IS NOT NULL AND agent_version <> ''
+  ${excludeEval ? "AND NOT is_eval_run" : ""}
+GROUP BY 1 ORDER BY MAX(turn_end_ts) DESC`;
 }
 
 export function qAgentFeedbackTrend(w: WindowKey): string {
@@ -1185,14 +1277,29 @@ WHERE agent_fqn = ? AND feedback_ts >= ${since(w)}
 GROUP BY 1 ORDER BY 1`;
 }
 
+// CURRENT_VERSION is the agent_version of the most recent turn (empties skipped
+// via NULLIF), so it reflects what is live in prod / CoWork right now; agents
+// whose turns predate the observability attribute collapse to NULL. Joined off
+// FLEET_TURNS rather than materialized into the inventory so no data-layer
+// rebuild is needed. FLEET_TURNS carries no surface column, so this is the
+// current version per agent, not split by cortex_agent vs cowork.
 export const Q_AGENT_LIST = `
-SELECT agent_fqn AS AGENT_FQN, display_name AS DISPLAY_NAME,
-       agent_name AS AGENT_NAME, turns_total AS TURNS_TOTAL,
-       agent_database AS AGENT_DATABASE, agent_schema AS AGENT_SCHEMA,
-       agent_owner AS AGENT_OWNER, profile_color AS PROFILE_COLOR,
-       distinct_users AS DISTINCT_USERS, last_turn_ts AS LAST_TURN_TS
-FROM ${FLEET_SCHEMA}.FLEET_AGENT_INVENTORY
-ORDER BY turns_total DESC, display_name`;
+SELECT i.agent_fqn AS AGENT_FQN, i.display_name AS DISPLAY_NAME,
+       i.agent_name AS AGENT_NAME, i.turns_total AS TURNS_TOTAL,
+       i.agent_database AS AGENT_DATABASE, i.agent_schema AS AGENT_SCHEMA,
+       i.agent_owner AS AGENT_OWNER, i.profile_color AS PROFILE_COLOR,
+       i.distinct_users AS DISTINCT_USERS, i.last_turn_ts AS LAST_TURN_TS,
+       v.current_version   AS CURRENT_VERSION,
+       v.distinct_versions AS DISTINCT_VERSIONS
+FROM ${FLEET_SCHEMA}.FLEET_AGENT_INVENTORY i
+LEFT JOIN (
+  SELECT agent_fqn,
+         MAX_BY(NULLIF(agent_version, ''), turn_end_ts) AS current_version,
+         COUNT(DISTINCT NULLIF(agent_version, ''))       AS distinct_versions
+  FROM ${FLEET_SCHEMA}.FLEET_TURNS
+  GROUP BY agent_fqn
+) v ON v.agent_fqn = i.agent_fqn
+ORDER BY i.turns_total DESC, i.display_name`;
 
 /* ---------------------------------------------------------------------------
    PAGE 4 - feedback

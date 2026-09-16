@@ -1,8 +1,9 @@
 "use client";
 
-import { Suspense, useMemo } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useAgent } from "@/lib/hooks";
+import { AnimatePresence, motion } from "motion/react";
+import { useAgent, useTraceSpans } from "@/lib/hooks";
 import { useShell } from "@/components/console/console-shell";
 import { Chart, Panel } from "@/components/ui/chart";
 import { KpiCard } from "@/components/fleet/kpi-card";
@@ -27,6 +28,8 @@ type TraceRow = {
   isRequestError: boolean;
   toolErrorCount: number;
   totalTokens: number;
+  questionText?: string | null;
+  agentVersion?: string | null;
 };
 
 /** Short relative time. Trace lists are scanned, and "2h ago" scans faster than a timestamp. */
@@ -46,10 +49,10 @@ function relTs(iso: string | null): string {
  * One trace, as an expandable ribbon. Visual vocabulary matches the feedback
  * ribbon (3px glowing status spine, hairline separator, chevron that rotates).
  *
- * State model differs from that one though, deliberately. There, `open` is local
- * useState and several rows can be open at once. Here, expanding IS selecting and
- * it drives a fetch, so `open` is passed down from the URL param. See the call
- * site for why.
+ * State model differs from that one though, deliberately. There, several rows can
+ * be open at once. Here, expanding IS selecting and drives a per-trace span
+ * fetch, so a single `openTrace` id in the parent keeps exactly one row open and
+ * the waterfall below always consistent with it.
  *
  * Not extracted into a shared component with the feedback ribbon: the two differ
  * in state model, in columns, and the feedback one derives its hue from
@@ -61,11 +64,13 @@ function TraceRibbon({
   open,
   onToggle,
   spans,
+  loading,
 }: {
   t: TraceRow;
   open: boolean;
   onToggle: () => void;
   spans: Span[];
+  loading: boolean;
 }) {
   // Request error outranks tool error: the turn failed outright, so the fact that
   // a tool also failed inside it is the lesser finding.
@@ -106,11 +111,27 @@ function TraceRibbon({
           {fmtMs(t.durationMs)}
         </span>
 
+        {/* Trace id, then the first ~100 chars of the user's prompt so the row
+            is legible without expanding. The id is shrink-0 so it never clips;
+            the question absorbs the remaining width and ellipsizes. */}
         <span
-          className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-lo"
-          title={t.traceId}
+          className="flex min-w-0 flex-1 items-baseline gap-2 truncate font-mono text-[11px]"
+          title={t.questionText ? `${t.traceId}\n${t.questionText}` : t.traceId}
         >
-          {t.traceId.slice(0, 16)}…
+          <span className="shrink-0 text-ink-lo">
+            {(t.traceId.replace(/^0+/, "") || t.traceId).slice(0, 16)}…
+          </span>
+          {t.questionText ? (
+            <span className="min-w-0 truncate text-ink-faint">
+              {t.questionText.slice(0, 100)}
+            </span>
+          ) : null}
+        </span>
+
+        {/* Per-turn agent version, just left of the user so you can scan which
+            revision served each trace without opening it. */}
+        <span className="hidden w-20 shrink-0 truncate font-mono text-[10px] text-ink-lo sm:block">
+          {t.agentVersion || "—"}
         </span>
 
         <span className="hidden w-24 shrink-0 truncate font-mono text-[11px] text-ink sm:block">
@@ -138,15 +159,30 @@ function TraceRibbon({
         </span>
       </button>
 
-      {open && (
-        // animate-fadeup rather than a motion/react height tween: it is the app's
-        // declared entrance and, being CSS, respects prefers-reduced-motion via the
-        // global guard. A height tween is also wrong here because the waterfall
-        // arrives asynchronously, so its final height is unknown at open time.
-        <div className="animate-fadeup border-t border-line-faint bg-inset/50 px-3 py-2.5">
-          <TraceWaterfall spans={spans} />
-        </div>
-      )}
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-line-faint bg-inset/50 px-3 py-2.5">
+              {/* Fixed-height placeholder while the per-trace span fetch is in
+                  flight. It also gives the height tween a concrete target at open
+                  time, so the waterfall's async arrival is no longer a problem. */}
+              {loading ? (
+                <div className="grid h-[200px] place-items-center border border-dashed border-line-faint">
+                  <span className="label-micro">Loading span tree…</span>
+                </div>
+              ) : (
+                <TraceWaterfall spans={spans} />
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </li>
   );
 }
@@ -156,12 +192,26 @@ function AgentsInner() {
   const router = useRouter();
   const params = useSearchParams();
   const agent = params.get("agent");
-  const trace = params.get("trace");
+  // Version subset (multi-select). Empty = ALL. Lives in the URL like `agent`,
+  // so it is part of useAgent's key and every metric re-subsets server-side.
+  const selectedVersions = (params.get("versions") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  const { data, error } = useAgent(win, agent, trace);
+  // Which trace ribbon is expanded. Local, not URL-driven: expanding a row no
+  // longer navigates or refetches the agent payload - it only fetches that
+  // trace's spans via useTraceSpans below. Exactly one row open at a time.
+  const [openTrace, setOpenTrace] = useState<string | null>(null);
 
-  const agents: Array<{ agentFqn: string; displayName: string; turnsTotal: number }> =
-    data?.agents ?? [];
+  const { data, error } = useAgent(win, agent, selectedVersions);
+  const { data: spanData, isLoading: spansLoading } = useTraceSpans(openTrace);
+
+  const agents: Array<{
+    agentFqn: string;
+    displayName: string;
+    turnsTotal: number;
+  }> = data?.agents ?? [];
   const trend = data?.trend ?? [];
   const tokens = data?.tokens ?? [];
   const resources = data?.resources ?? [];
@@ -169,7 +219,9 @@ function AgentsInner() {
   const slowTraces = data?.slowTraces ?? [];
   const usersRoles = data?.usersRoles ?? [];
   const feedback = data?.feedback ?? [];
-  const spans: Span[] = data?.spans ?? [];
+  const versionsAvailable: Array<{ version: string; turns: number }> =
+    data?.versionsAvailable ?? [];
+  const spans: Span[] = spanData?.spans ?? [];
   const k = data?.kpis;
   const cost = data?.cost;
   const identity: AgentIdentity | null = data?.identity ?? null;
@@ -193,21 +245,42 @@ function AgentsInner() {
   }, [cost]);
 
   const setAgent = (fqn: string) => {
+    setOpenTrace(null); // a trace id from the previous agent can't linger
     const p = new URLSearchParams();
     p.set("agent", fqn);
     router.push(`/agents?${p.toString()}`);
   };
-  const setTrace = (t: string) => {
+
+  /**
+   * Multi-select version filter, persisted to the URL alongside `agent`. Empty
+   * array = ALL (param removed). Keeps the current agent and resets the open
+   * trace so a stale span view can't linger across a re-subset.
+   */
+  const setVersions = (next: string[]) => {
+    setOpenTrace(null);
     const p = new URLSearchParams();
     if (agent) p.set("agent", agent);
-    p.set("trace", t);
+    if (next.length) p.set("versions", next.join(","));
     router.push(`/agents?${p.toString()}`);
   };
-  /** Collapse the open ribbon. Drops `trace` so the span fetch is skipped. */
-  const clearTrace = () => {
-    const p = new URLSearchParams();
-    if (agent) p.set("agent", agent);
-    router.push(`/agents?${p.toString()}`);
+  const toggleVersion = (v: string) =>
+    setVersions(
+      selectedVersions.includes(v)
+        ? selectedVersions.filter((x) => x !== v)
+        : [...selectedVersions, v],
+    );
+
+  /**
+   * Deep-link to the Feedback page pre-scoped to this agent + the clicked donut
+   * segment. Reads params.name ("Positive"/"Negative") rather than dataIndex
+   * because the donut filters out zero-value slices, so index would shift.
+   */
+  const onDonutClick = (p: unknown) => {
+    if (!agent) return;
+    const name = (p as { name?: string })?.name;
+    if (name !== "Positive" && name !== "Negative") return;
+    const sentiment = name === "Negative" ? "negative" : "positive";
+    router.push(`/feedback?agent=${encodeURIComponent(agent)}&sentiment=${sentiment}`);
   };
 
   /** Requests + error overlay + latency on a second axis. */
@@ -550,7 +623,50 @@ function AgentsInner() {
               Keyed on the FQN so React remounts on agent change and the
               animate-fadeup entrance replays. Without the key the text swaps with
               no transition. */}
-          <AgentIdentityBanner key={agent} identity={identity} agentFqn={agent} />
+          <AgentIdentityBanner
+            key={agent}
+            identity={identity}
+            agentFqn={agent}
+            selectedVersions={selectedVersions}
+          />
+
+          {/* ---------- version filter ----------
+              Only meaningful when the agent has more than one version in the
+              window. Multi-select: ALL, or any subset. Subsets every metric
+              below except feedback (which carries no agent version). */}
+          {versionsAvailable.length >= 2 && (
+            <div className="panel flex flex-wrap items-center gap-1.5 px-3 py-2">
+              <span className="label-micro mr-1">Version</span>
+              <button
+                onClick={() => setVersions([])}
+                className={`rounded-chip border px-2 py-[3px] font-mono text-[11px] transition-colors ${
+                  selectedVersions.length === 0
+                    ? "border-line-strong bg-raised text-ink-hi"
+                    : "border-line text-ink-lo hover:border-line-strong hover:text-ink"
+                }`}
+              >
+                ALL
+              </button>
+              {versionsAvailable.map((v) => {
+                const active = selectedVersions.includes(v.version);
+                return (
+                  <button
+                    key={v.version}
+                    onClick={() => toggleVersion(v.version)}
+                    title={`${v.turns} turn${v.turns === 1 ? "" : "s"} in window`}
+                    className={`rounded-chip border px-2 py-[3px] font-mono text-[11px] transition-colors ${
+                      active
+                        ? "border-line-strong bg-raised text-ink-hi"
+                        : "border-line text-ink-lo hover:border-line-strong hover:text-ink"
+                    }`}
+                  >
+                    {v.version}
+                    <span className="ml-1.5 text-ink-faint">{v.turns}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* ---------- KPI row ----------
               Same four-tile treatment as the fleet page, scoped to this agent.
@@ -562,7 +678,7 @@ function AgentsInner() {
               value={k ? k.requests : null}
               detail={`p95 ${fmtMs(k?.p95Ms)}`}
               description="The number of individual requests, or turns, made to this agent in the window. One turn is a single prompt-and-response cycle, not a whole conversation."
-              sql={explainRequests(win, data?.config?.excludeEvalRuns ?? true, agent)}
+              sql={explainRequests(win, data?.config?.excludeEvalRuns ?? true, agent, selectedVersions)}
               hint="Counted as root AgentV2RequestResponseInfo spans. p95 is computed over successful turns only."
             />
 
@@ -583,7 +699,7 @@ function AgentsInner() {
                   : undefined
               }
               description="How many turns the average conversation runs to. A thread is one session, so this is the depth of a typical back-and-forth with this agent rather than a count of one-shot questions."
-              sql={explainTurnsPerThread(win, data?.config?.excludeEvalRuns ?? true, agent)}
+              sql={explainTurnsPerThread(win, data?.config?.excludeEvalRuns ?? true, agent, selectedVersions)}
               hint="Divides turns that CARRY a thread id by the number of distinct threads. thread_id is not always populated, and dividing all turns by distinct threads would credit threadless turns to threads that never held them."
             />
 
@@ -599,7 +715,7 @@ function AgentsInner() {
                   : undefined
               }
               description="The estimated cost of this agent's requests in the window, priced from the credits Snowflake metered for each request, then split by where that spend went."
-              sql={explainCost(win, data?.config?.excludeEvalRuns ?? true, cost?.usdPerAiCredit ?? 2, agent)}
+              sql={explainCost(win, data?.config?.excludeEvalRuns ?? true, cost?.usdPerAiCredit ?? 2, agent, selectedVersions)}
               infoAlign="right"
               hint="Token credits only. Excludes warehouse compute for SQL this agent ran, and Cortex Search serving. Percentages are shares of SPEND, not of tokens. Metering lags up to 1 hour."
             />
@@ -613,7 +729,7 @@ function AgentsInner() {
                   label="Error Rate"
                   align="right"
                   description="The share of this agent's requests that failed, split by where the failure happened: Request is the whole turn failing, Tool is an individual step failing inside a turn that still returned."
-                  sql={explainErrorRates(win, data?.config?.excludeEvalRuns ?? true, agent)}
+                  sql={explainErrorRates(win, data?.config?.excludeEvalRuns ?? true, agent, selectedVersions)}
                   hint="Reported separately, never blended. A turn can survive a failed tool, so the two rates share a denominator but are not additive - the same turn can appear in both."
                 />
               </div>
@@ -804,6 +920,12 @@ function AgentsInner() {
                     </tbody>
                   </table>
                 )}
+                {selectedVersions.length > 0 && (
+                  <p className="mt-2 font-mono text-[9px] leading-relaxed text-ink-faint">
+                    Not version-scoped — feedback events carry no agent version, so this panel shows
+                    all versions regardless of the version filter above.
+                  </p>
+                )}
               </Panel>
 
               <Panel
@@ -827,8 +949,12 @@ function AgentsInner() {
                     {/* Donut + centred total. The number lives in the hole as a
                         DOM overlay rather than an ECharts label so it inherits
                         the app's font stack and tabular figures. */}
-                    <div className="relative h-[140px]">
-                      <Chart option={feedbackDonutOption} height={140} />
+                    <div className="relative h-[140px] cursor-pointer">
+                      <Chart
+                        option={feedbackDonutOption}
+                        height={140}
+                        onEvents={{ click: onDonutClick }}
+                      />
                       <div className="pointer-events-none absolute inset-0 grid place-items-center">
                         <div className="text-center">
                           <div
@@ -864,21 +990,25 @@ function AgentsInner() {
               </div>
             ) : (
               <ul className="flex flex-col">
-                {slowTraces.map((t: TraceRow) => (
-                  <TraceRibbon
-                    key={t.traceId}
-                    t={t}
-                    // Open state is DERIVED FROM THE URL, not local component
-                    // state. Expanding a row is what triggers the span fetch
-                    // (useAgent refetches on the `trace` param), so local state
-                    // would let a row look open while the waterfall below showed
-                    // a different trace. This also makes exactly one row open at
-                    // a time, and makes the open row linkable and reload-safe.
-                    open={trace === t.traceId}
-                    onToggle={() => (trace === t.traceId ? clearTrace() : setTrace(t.traceId))}
-                    spans={spans}
-                  />
-                ))}
+                {slowTraces.map((t: TraceRow) => {
+                  const isOpen = openTrace === t.traceId;
+                  return (
+                    <TraceRibbon
+                      key={t.traceId}
+                      t={t}
+                      // Local open-state. Toggling only flips this id and drives
+                      // useTraceSpans(openTrace) - no navigation, no agent-payload
+                      // refetch. A single id keeps exactly one row open, so the
+                      // waterfall can never show a different trace than the open row.
+                      open={isOpen}
+                      onToggle={() =>
+                        setOpenTrace((cur) => (cur === t.traceId ? null : t.traceId))
+                      }
+                      spans={isOpen ? spans : []}
+                      loading={isOpen && spansLoading}
+                    />
+                  );
+                })}
               </ul>
             )}
           </Panel>

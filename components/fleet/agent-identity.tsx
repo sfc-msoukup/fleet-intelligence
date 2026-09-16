@@ -66,15 +66,23 @@ export type AgentIdentity = {
   turnsTotal: number;
   distinctUsers: number;
   lastTurnTs: string | null;
+  // Live version of the most recent turn ("LIVE", "VERSION$2", ...); null for
+  // agents whose turns predate the observability version attribute.
+  currentVersion: string | null;
+  distinctVersions: number;
 };
 
 export function AgentIdentityBanner({
   identity,
   agentFqn,
+  selectedVersions = [],
 }: {
   identity: AgentIdentity | null;
   /** Falls back to the URL value so a stale deep link still names what it asked for. */
   agentFqn: string;
+  /** Version filter from /agents. Empty = ALL. The banner mirrors this so the
+      version fact names what the metrics below are actually scoped to. */
+  selectedVersions?: string[];
 }) {
   // The URL can name an agent that has since been dropped. Say so plainly rather
   // than rendering an empty banner that looks like a loading state.
@@ -134,6 +142,28 @@ export function AgentIdentityBanner({
           from SHOW AGENTS and lifetime activity, so they do not move with the
           window selector. The KPI row below is the windowed view. */}
       <dl className="hidden shrink-0 gap-x-5 font-mono text-[10px] sm:flex">
+        {/* Mirrors the version filter so the fact names what the metrics below are
+            scoped to: ALL when unfiltered, the version when exactly one is picked,
+            or "N versions" for a multi-select. Falls back to the live version. */}
+        <Fact
+          label="version"
+          value={
+            selectedVersions.length === 1
+              ? selectedVersions[0]
+              : selectedVersions.length > 1
+                ? `${selectedVersions.length} versions`
+                : "ALL"
+          }
+          hint={
+            selectedVersions.length > 0
+              ? `metrics scoped to ${selectedVersions.join(", ")}`
+              : identity.currentVersion
+                ? identity.distinctVersions > 1
+                  ? `all versions · live is ${identity.currentVersion} · ${identity.distinctVersions} seen`
+                  : `all versions · live is ${identity.currentVersion}`
+                : "all versions"
+          }
+        />
         <Fact label="owner" value={identity.owner ?? "—"} />
         <Fact label="users" value={String(identity.distinctUsers)} />
         <Fact label="turns" value={fmtNum(identity.turnsTotal)} hint="lifetime, all windows" />

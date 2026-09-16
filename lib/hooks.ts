@@ -62,13 +62,14 @@ export function useLimitTrends(window: string) {
   });
 }
 
-export function useAgent(window: string, agent: string | null, trace: string | null) {
+export function useAgent(window: string, agent: string | null, versions: string[] = []) {
+  const versionKey = versions.join(",");
   return useQuery({
-    queryKey: ["agent", window, agent, trace],
+    queryKey: ["agent", window, agent, versionKey],
     queryFn: async () => {
       const p = new URLSearchParams({ window });
       if (agent) p.set("agent", agent);
-      if (trace) p.set("trace", trace);
+      if (versionKey) p.set("versions", versionKey);
       const res = await fetch(`/api/agent?${p.toString()}`);
       if (!res.ok) throw new Error((await res.json())?.error ?? `HTTP ${res.status}`);
       return res.json();
@@ -77,6 +78,30 @@ export function useAgent(window: string, agent: string | null, trace: string | n
     refetchIntervalInBackground: false,
     staleTime: REFRESH_MS,
     placeholderData: (prev: unknown) => prev,
+    retry: 2,
+  });
+}
+
+/**
+ * Span tree for one expanded trace, fetched in isolation from /api/trace/[id].
+ *
+ * Kept OUT of useAgent's query key on purpose: expanding a trace used to be a
+ * `trace` URL param that was part of useAgent's key, so opening a row refetched
+ * the entire agent deep-dive payload and felt like a page reload. This fetches
+ * only the spans, gated on an open trace. No refetchInterval - a completed
+ * trace's spans are immutable, so polling them would be pure waste.
+ */
+export function useTraceSpans(trace: string | null) {
+  return useQuery({
+    queryKey: ["trace-spans", trace],
+    enabled: trace !== null,
+    queryFn: async () => {
+      const res = await fetch(`/api/trace/${encodeURIComponent(trace as string)}`);
+      if (!res.ok) throw new Error((await res.json())?.error ?? `HTTP ${res.status}`);
+      return res.json();
+    },
+    staleTime: REFRESH_MS,
+    gcTime: 5 * 60_000,
     retry: 2,
   });
 }

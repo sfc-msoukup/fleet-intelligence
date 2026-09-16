@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "motion/react";
 import { useFeedback } from "@/lib/hooks";
 import { Chart, Panel } from "@/components/ui/chart";
@@ -185,13 +186,23 @@ function Ribbon({ item }: { item: Item }) {
   );
 }
 
-export default function FeedbackPage() {
+function FeedbackInner() {
   const { data, error } = useFeedback();
-  const [filter, setFilter] = useState<"all" | "negative" | "positive">("all");
+  const params = useSearchParams();
+
+  // Deep-link seed (e.g. from the agents-page feedback donut):
+  //   /feedback?agent=<agent_fqn>&sentiment=negative|positive
+  // Used only as the INITIAL value; the chips/segmented control take over after.
+  // The `agent` param is an agent_fqn, exactly what the chips filter on.
+  const sentimentParam = params.get("sentiment");
+  const initialFilter: "all" | "negative" | "positive" =
+    sentimentParam === "negative" || sentimentParam === "positive" ? sentimentParam : "all";
+
+  const [filter, setFilter] = useState<"all" | "negative" | "positive">(initialFilter);
   const [category, setCategory] = useState<string | null>(null);
   // null = every agent in the account (the default). A specific agent_fqn
   // rescopes the whole page - KPIs, both charts and the stream - to that agent.
-  const [agent, setAgent] = useState<string | null>(null);
+  const [agent, setAgent] = useState<string | null>(params.get("agent"));
 
   const summary = data?.summary;
   const categories: Array<{ category: string; n: number; agents: number }> =
@@ -206,26 +217,33 @@ export default function FeedbackPage() {
   }> = data?.byAgent ?? [];
   const items: Item[] = data?.items ?? [];
 
+  // An agent arriving via URL may not exist in this account's feedback (the chip
+  // list is derived from feedback rows). Clamp an unknown agent back to "all" so
+  // a stale or hand-edited deep link degrades gracefully instead of showing an
+  // empty page with no highlighted chip.
+  const effAgent =
+    agent === null || byAgent.some((a) => a.agentFqn === agent) ? agent : null;
+
   // Items scoped to the selected agent. `items` is the COMPLETE feedback table
   // (Q_FEEDBACK_ITEMS has no LIMIT), so when an agent is chosen every aggregate
   // below re-derives from it exactly, reproducing the server rollups.
   const scopedItems = useMemo(
-    () => (agent ? items.filter((i) => i.agentFqn === agent) : items),
-    [items, agent],
+    () => (effAgent ? items.filter((i) => i.agentFqn === effAgent) : items),
+    [items, effAgent],
   );
 
   // With no agent selected the validated account-wide server aggregates pass
   // straight through; a specific agent rescopes each one from `scopedItems`.
   const effSummary = useMemo(() => {
-    if (!agent) return summary;
+    if (!effAgent) return summary;
     const total = scopedItems.length;
     const positive = scopedItems.filter((i) => i.isPositive).length;
     const users = new Set(scopedItems.map((i) => i.userName).filter(Boolean)).size;
     return { total, positive, negative: total - positive, agents: total > 0 ? 1 : 0, users };
-  }, [agent, summary, scopedItems]);
+  }, [effAgent, summary, scopedItems]);
 
   const effCategories = useMemo(() => {
-    if (!agent) return categories;
+    if (!effAgent) return categories;
     const counts = new Map<string, { n: number; agents: Set<string> }>();
     for (const i of scopedItems) {
       if (i.isPositive) continue;
@@ -239,19 +257,19 @@ export default function FeedbackPage() {
     return [...counts.entries()]
       .map(([cat, e]) => ({ category: cat, n: e.n, agents: e.agents.size }))
       .sort((a, b) => b.n - a.n);
-  }, [agent, categories, scopedItems]);
+  }, [effAgent, categories, scopedItems]);
 
   const effUncategorized = useMemo(
     () =>
-      agent
+      effAgent
         ? scopedItems.filter((i) => !i.isPositive && i.categories.length === 0).length
         : uncategorized,
-    [agent, uncategorized, scopedItems],
+    [effAgent, uncategorized, scopedItems],
   );
 
   const effByAgent = useMemo(
-    () => (agent ? byAgent.filter((a) => a.agentFqn === agent) : byAgent),
-    [agent, byAgent],
+    () => (effAgent ? byAgent.filter((a) => a.agentFqn === effAgent) : byAgent),
+    [effAgent, byAgent],
   );
 
   const filtered = useMemo(() => {
@@ -367,7 +385,7 @@ export default function FeedbackPage() {
         <button
           onClick={() => setAgent(null)}
           className={`rounded-chip border px-2 py-[3px] font-mono text-[11px] transition-colors ${
-            agent === null
+            effAgent === null
               ? "border-line-strong bg-raised text-ink-hi"
               : "border-line text-ink-lo hover:border-line-strong hover:text-ink"
           }`}
@@ -381,7 +399,7 @@ export default function FeedbackPage() {
             onClick={() => setAgent(a.agentFqn)}
             title={a.agentFqn}
             className={`rounded-chip border px-2 py-[3px] font-mono text-[11px] transition-colors ${
-              agent === a.agentFqn
+              effAgent === a.agentFqn
                 ? "border-line-strong bg-raised text-ink-hi"
                 : "border-line text-ink-lo hover:border-line-strong hover:text-ink"
             }`}
@@ -539,5 +557,13 @@ export default function FeedbackPage() {
         )}
       </Panel>
     </div>
+  );
+}
+
+export default function FeedbackPage() {
+  return (
+    <Suspense fallback={<div className="label-micro p-4">Loading…</div>}>
+      <FeedbackInner />
+    </Suspense>
   );
 }

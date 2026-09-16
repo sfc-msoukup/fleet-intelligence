@@ -127,6 +127,11 @@ export function TraceWaterfall({ spans }: { spans: Span[] }) {
       },
       tooltip: {
         ...TOOLTIP,
+        // The waterfall lives inside the trace ribbon's expanded panel, which is
+        // `overflow-hidden` for its height tween. A tooltip near the top rows
+        // would be clipped by that; rendering it into document.body escapes the
+        // clip entirely.
+        appendToBody: true,
         formatter: (p: never) => {
           const params = p as unknown as { dataIndex: number };
           const r = rows[params.dataIndex];
